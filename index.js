@@ -15,6 +15,45 @@ function checkKey(req, res) {
   }
   return true;
 }
+async function basitKargoFilterOrders({ startDate, endDate, statusList, page = 0, size = 100 }) {
+  const token = process.env.BASITKARGO_TOKEN;
+  if (!token) throw new Error("Missing BASITKARGO_TOKEN");
+
+  const url = "https://basitkargo.com/api/v2/order/filter"; // :contentReference[oaicite:1]{index=1}
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ startDate, endDate, statusList, page, size }),
+  });
+
+  const text = await r.text();
+  if (!r.ok) throw new Error(`BasitKargo HTTP ${r.status}: ${text}`);
+  return JSON.parse(text);
+}
+
+async function basitKargoFilterOrders({ startDate, endDate, statusList, page = 0, size = 100 }) {
+  const token = process.env.BASITKARGO_TOKEN;
+  if (!token) throw new Error("Missing BASITKARGO_TOKEN");
+
+  const url = "https://basitkargo.com/api/v2/order/filter"; // :contentReference[oaicite:1]{index=1}
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ startDate, endDate, statusList, page, size }),
+  });
+
+  const text = await r.text();
+  if (!r.ok) throw new Error(`BasitKargo HTTP ${r.status}: ${text}`);
+  return JSON.parse(text);
+}
 
 /* -------------------- Basit Kargo -------------------- */
 
