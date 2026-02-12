@@ -41,27 +41,13 @@ async function basitKargoGetOrderById(id) {
   }
 }
 
-// Basit Kargo response’undan Shopify Order GID üret
 function extractShopifyOrderGidFromBasitKargo(bk) {
-  // Senin örnekte: content.code = "7708726460709" (Shopify Order ID)
-  const raw = bk?.content?.code || bk?.foreignCode || null;
+  const raw = bk?.content?.code || bk?.foreignCode || null; // "7708726460709"
   if (!raw) return null;
 
   const s = raw.toString().trim();
   if (/^\d{10,16}$/.test(s)) return `gid://shopify/Order/${s}`;
   return null;
-}
-
-function normalizeCarrierName(bk, payload) {
-  return (
-    bk?.shipmentInfo?.handler?.name ||
-    payload?.shipmentInfo?.handler?.name ||
-    payload?.handler?.name ||
-    bk?.shipmentInfo?.handler?.code ||
-    payload?.shipmentInfo?.handler?.code ||
-    payload?.handler?.code ||
-    "Other"
-  );
 }
 
 function normalizeTrackingNumber(bk, payload) {
@@ -70,6 +56,14 @@ function normalizeTrackingNumber(bk, payload) {
     payload?.shipmentInfo?.handlerShipmentCode ||
     payload?.handlerShipmentCode ||
     payload?.barcode ||
+    null
+  );
+}
+
+function normalizeTrackingUrl(bk, payload) {
+  return (
+    bk?.shipmentInfo?.handlerShipmentTrackingLink ||
+    payload?.shipmentInfo?.handlerShipmentTrackingLink ||
     null
   );
 }
@@ -105,7 +99,7 @@ async function shopifyGraphql(query, variables) {
   return json;
 }
 
-async function fulfillWithTrackingOnOpenFOs(orderGid, carrierName, trackingNumber) {
+async function fulfillWithTrackingOnOpenFOs(orderGid, trackingNumber, trackingUrl) {
   const getOrderQuery = `
     query ($id: ID!) {
       order(id: $id) {
@@ -144,13 +138,16 @@ async function fulfillWithTrackingOnOpenFOs(orderGid, carrierName, trackingNumbe
 
   const results = [];
   for (const fo of openFOs) {
+    const trackingInfo = {
+      company: "Other", // ✅ her zaman Other
+      number: trackingNumber,
+      ...(trackingUrl ? { url: trackingUrl } : {}),
+    };
+
     const vars = {
       fulfillment: {
         notifyCustomer: true,
-        trackingInfo: {
-          company: carrierName,
-          number: trackingNumber,
-        },
+        trackingInfo,
         lineItemsByFulfillmentOrder: [{ fulfillmentOrderId: fo.id }],
       },
     };
@@ -173,13 +170,13 @@ async function fulfillWithTrackingOnOpenFOs(orderGid, carrierName, trackingNumbe
 /* -------------------- Webhook Handler -------------------- */
 
 async function handleBasitKargoWebhook(payload) {
-  // Basit Kargo tarafında statüler: READY_TO_SHIP, SHIPPED vb
+  // Panel testleri bazen boş/örnek body atar → 200 dön, bozmasın
+  if (!payload || !payload.id) return { ok: true, msg: "OK (test payload ignored)" };
+
+  // Statü bazen READY_TO_SHIP, bazen SHIPPED gelir
   const okStatuses = new Set(["READY_TO_SHIP", "SHIPPED"]);
-  if (!okStatuses.has(payload?.status)) return { ok: true, msg: "Ignored" };
+  if (payload.status && !okStatuses.has(payload.status)) return { ok: true, msg: "OK (status ignored)" };
 
-  if (!payload?.id) return { ok: false, msg: "Webhook payload missing id" };
-
-  // Basit Kargo order detail çek
   const bk = await basitKargoGetOrderById(payload.id);
 
   const orderGid = extractShopifyOrderGidFromBasitKargo(bk);
@@ -188,22 +185,17 @@ async function handleBasitKargoWebhook(payload) {
   const trackingNumber = normalizeTrackingNumber(bk, payload);
   if (!trackingNumber) return { ok: false, msg: "Tracking number not found (handlerShipmentCode/barcode)" };
 
-  const carrierName = normalizeCarrierName(bk, payload);
+  const trackingUrl = normalizeTrackingUrl(bk, payload);
 
-  // Shopify fulfillment + tracking
-  return await fulfillWithTrackingOnOpenFOs(orderGid, carrierName, trackingNumber);
+  return await fulfillWithTrackingOnOpenFOs(orderGid, trackingNumber, trackingUrl);
 }
 
 /* -------------------- Routes -------------------- */
 
-// Gerçek Basit Kargo webhook endpoint
 app.post("/basitkargo-webhook", async (req, res) => {
   if (!checkKey(req, res)) return;
 
   try {
-    // Debug gerekirse aç:
-    // console.log("BASITKARGO WEBHOOK:", JSON.stringify(req.body));
-
     const result = await handleBasitKargoWebhook(req.body);
     return res.status(result.ok ? 200 : 400).send(result.msg);
   } catch (e) {
@@ -212,17 +204,15 @@ app.post("/basitkargo-webhook", async (req, res) => {
   }
 });
 
-// Manuel test: sadece Basit Kargo order id ver
+// Manuel test: { id: "LTU-22S-9GV", status:"READY_TO_SHIP" }
 app.post("/manual-bk", async (req, res) => {
   if (!checkKey(req, res)) return;
 
   try {
-    // body: { id: "LTU-22S-9GV", status:"READY_TO_SHIP" }
     const payload = {
       id: req.body?.id,
       status: req.body?.status || "READY_TO_SHIP",
     };
-
     const result = await handleBasitKargoWebhook(payload);
     return res.status(result.ok ? 200 : 400).send(result.msg);
   } catch (e) {
