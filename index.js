@@ -4,6 +4,7 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/", (_, res) => res.status(200).send("OK"));
+console.log("STORE:", process.env.SHOPIFY_STORE);
 
 function checkKey(req, res) {
   const expected = process.env.WEBHOOK_KEY;
