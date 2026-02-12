@@ -123,16 +123,16 @@ async function handleShipmentToShopify(payload) {
     }
   `;
 
-  const fulfillVars = {
-    fulfillment: {
-      fulfillmentOrderId: openFO.id,
-      notifyCustomer: true,
-      trackingInfo: {
-        number: trackingNumber,
-        company: carrierCode,
-      },
-    },
-  };
+const fulfillVars = {
+  fulfillment: {
+    notifyCustomer: true,
+    trackingInfo: { number: trackingNumber, company: carrierCode },
+    lineItemsByFulfillmentOrder: [
+      { fulfillmentOrderId: openFO.id }
+    ]
+  }
+};
+
 
   const fulfillRes = await shopifyGraphql(store, token, fulfillMutation, fulfillVars);
   if (!fulfillRes.ok) {
