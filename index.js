@@ -1,13 +1,15 @@
 import express from "express";
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
+
+/* -------------------- Basics -------------------- */
 
 app.get("/", (_, res) => res.status(200).send("OK"));
 
 function checkKey(req, res) {
   const expected = process.env.WEBHOOK_KEY;
-  if (!expected) return true;
+  if (!expected) return true; // if you want it mandatory, remove this line and enforce key always
   const key = req.query.key;
   if (key !== expected) {
     res.status(401).send("Unauthorized");
@@ -15,44 +17,37 @@ function checkKey(req, res) {
   }
   return true;
 }
-async function basitKargoFilterOrders({ startDate, endDate, statusList, page = 0, size = 100 }) {
-  const token = process.env.BASITKARGO_TOKEN;
-  if (!token) throw new Error("Missing BASITKARGO_TOKEN");
 
-  const url = "https://basitkargo.com/api/v2/order/filter"; // :contentReference[oaicite:1]{index=1}
-  const r = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ startDate, endDate, statusList, page, size }),
-  });
+/* -------------------- Time helpers (Europe/Istanbul) -------------------- */
 
-  const text = await r.text();
-  if (!r.ok) throw new Error(`BasitKargo HTTP ${r.status}: ${text}`);
-  return JSON.parse(text);
+function istanbulDayISO(date = new Date()) {
+  // returns YYYY-MM-DD in Europe/Istanbul
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Istanbul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+  return `${y}-${m}-${d}`;
 }
 
-async function basitKargoFilterOrders({ startDate, endDate, statusList, page = 0, size = 100 }) {
-  const token = process.env.BASITKARGO_TOKEN;
-  if (!token) throw new Error("Missing BASITKARGO_TOKEN");
+function istanbulTodayRange() {
+  const day = istanbulDayISO(new Date());
+  // BasitKargo expects local-looking timestamps; TR is fixed UTC+3 generally.
+  // We'll send as "YYYY-MM-DDT00:00:00" and next day "YYYY-MM-DDT00:00:00"
+  const startDate = `${day}T00:00:00`;
 
-  const url = "https://basitkargo.com/api/v2/order/filter"; // :contentReference[oaicite:1]{index=1}
-  const r = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ startDate, endDate, statusList, page, size }),
-  });
+  // next day
+  const dt = new Date(`${day}T00:00:00+03:00`);
+  dt.setDate(dt.getDate() + 1);
+  const nextDay = istanbulDayISO(dt);
+  const endDate = `${nextDay}T00:00:00`;
 
-  const text = await r.text();
-  if (!r.ok) throw new Error(`BasitKargo HTTP ${r.status}: ${text}`);
-  return JSON.parse(text);
+  return { startDate, endDate };
 }
 
 /* -------------------- Basit Kargo -------------------- */
@@ -72,16 +67,32 @@ async function basitKargoGetOrderById(id) {
 
   const text = await r.text();
   if (!r.ok) throw new Error(`BasitKargo HTTP ${r.status}: ${text}`);
+  return JSON.parse(text);
+}
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error("BasitKargo response is not JSON");
-  }
+async function basitKargoFilterOrders({ startDate, endDate, statusList, page = 0, size = 100 }) {
+  const token = process.env.BASITKARGO_TOKEN;
+  if (!token) throw new Error("Missing BASITKARGO_TOKEN");
+
+  const url = "https://basitkargo.com/api/v2/order/filter";
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ startDate, endDate, statusList, page, size }),
+  });
+
+  const text = await r.text();
+  if (!r.ok) throw new Error(`BasitKargo HTTP ${r.status}: ${text}`);
+  return JSON.parse(text);
 }
 
 function extractShopifyOrderGidFromBasitKargo(bk) {
-  const raw = bk?.content?.code || bk?.foreignCode || null; // "7708726460709"
+  // In your real example: content.code / foreignCode = "7708726460709" (Shopify Order numeric ID)
+  const raw = bk?.content?.code || bk?.foreignCode || null;
   if (!raw) return null;
 
   const s = raw.toString().trim();
@@ -94,6 +105,7 @@ function normalizeTrackingNumber(bk, payload) {
     bk?.shipmentInfo?.handlerShipmentCode ||
     payload?.shipmentInfo?.handlerShipmentCode ||
     payload?.handlerShipmentCode ||
+    bk?.barcode ||
     payload?.barcode ||
     null
   );
@@ -165,11 +177,7 @@ async function fulfillWithTrackingOnOpenFOs(orderGid, trackingNumber, trackingUr
   const fulfillMutation = `
     mutation ($fulfillment: FulfillmentV2Input!) {
       fulfillmentCreateV2(fulfillment: $fulfillment) {
-        fulfillment {
-          id
-          status
-          trackingInfo { company number url }
-        }
+        fulfillment { id status trackingInfo { company number url } }
         userErrors { field message }
       }
     }
@@ -178,7 +186,7 @@ async function fulfillWithTrackingOnOpenFOs(orderGid, trackingNumber, trackingUr
   const results = [];
   for (const fo of openFOs) {
     const trackingInfo = {
-      company: "Other", // ✅ her zaman Other
+      company: "Other", // ✅ always Other (as you requested)
       number: trackingNumber,
       ...(trackingUrl ? { url: trackingUrl } : {}),
     };
@@ -193,9 +201,8 @@ async function fulfillWithTrackingOnOpenFOs(orderGid, trackingNumber, trackingUr
 
     const resp = await shopifyGraphql(fulfillMutation, vars);
     const userErrors = resp?.data?.fulfillmentCreateV2?.userErrors || [];
-    if (userErrors.length) {
-      return { ok: false, msg: `Shopify userErrors: ${JSON.stringify(userErrors)}` };
-    }
+    if (userErrors.length) return { ok: false, msg: `Shopify userErrors: ${JSON.stringify(userErrors)}` };
+
     const f = resp?.data?.fulfillmentCreateV2?.fulfillment;
     results.push({ fo: fo.id, fulfillmentId: f?.id, status: f?.status });
   }
@@ -206,23 +213,23 @@ async function fulfillWithTrackingOnOpenFOs(orderGid, trackingNumber, trackingUr
   };
 }
 
-/* -------------------- Webhook Handler -------------------- */
+/* -------------------- Core handler -------------------- */
 
 async function handleBasitKargoWebhook(payload) {
-  // Panel testleri bazen boş/örnek body atar → 200 dön, bozmasın
+  // Panel "webhook test" often sends dummy/no body → do not fail
   if (!payload || !payload.id) return { ok: true, msg: "OK (test payload ignored)" };
 
-  // Statü bazen READY_TO_SHIP, bazen SHIPPED gelir
+  // Work on these statuses (safe):
   const okStatuses = new Set(["READY_TO_SHIP", "SHIPPED"]);
   if (payload.status && !okStatuses.has(payload.status)) return { ok: true, msg: "OK (status ignored)" };
 
   const bk = await basitKargoGetOrderById(payload.id);
 
   const orderGid = extractShopifyOrderGidFromBasitKargo(bk);
-  if (!orderGid) return { ok: false, msg: "BasitKargo response içinde Shopify Order ID yok (content.code/foreignCode)" };
+  if (!orderGid) return { ok: false, msg: "BasitKargo response missing Shopify order id (content.code/foreignCode)" };
 
   const trackingNumber = normalizeTrackingNumber(bk, payload);
-  if (!trackingNumber) return { ok: false, msg: "Tracking number not found (handlerShipmentCode/barcode)" };
+  if (!trackingNumber) return { ok: false, msg: "Tracking number missing (handlerShipmentCode/barcode)" };
 
   const trackingUrl = normalizeTrackingUrl(bk, payload);
 
@@ -231,6 +238,7 @@ async function handleBasitKargoWebhook(payload) {
 
 /* -------------------- Routes -------------------- */
 
+// Real BasitKargo webhook endpoint
 app.post("/basitkargo-webhook", async (req, res) => {
   if (!checkKey(req, res)) return;
 
@@ -243,7 +251,7 @@ app.post("/basitkargo-webhook", async (req, res) => {
   }
 });
 
-// Manuel test: { id: "LTU-22S-9GV", status:"READY_TO_SHIP" }
+// Manual single-order test (give BasitKargo order id)
 app.post("/manual-bk", async (req, res) => {
   if (!checkKey(req, res)) return;
 
@@ -254,6 +262,68 @@ app.post("/manual-bk", async (req, res) => {
     };
     const result = await handleBasitKargoWebhook(payload);
     return res.status(result.ok ? 200 : 400).send(result.msg);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).send(e?.message || "Server error");
+  }
+});
+
+// Backfill: fulfill today's shipments in bulk (READY_TO_SHIP + SHIPPED)
+// You can override date range via body: { startDate:"YYYY-MM-DDT00:00:00", endDate:"YYYY-MM-DDT00:00:00", statusList:[...] }
+app.post("/backfill-today", async (req, res) => {
+  if (!checkKey(req, res)) return;
+
+  try {
+    const { startDate: defStart, endDate: defEnd } = istanbulTodayRange();
+    const startDate = req.body?.startDate || defStart;
+    const endDate = req.body?.endDate || defEnd;
+    const statusList = req.body?.statusList || ["READY_TO_SHIP", "SHIPPED"];
+
+    const size = Number(req.body?.size || 100);
+    const maxPages = Number(req.body?.maxPages || 50);
+
+    const done = [];
+    const failed = [];
+
+    for (let page = 0; page < maxPages; page++) {
+      const resp = await basitKargoFilterOrders({ startDate, endDate, statusList, page, size });
+
+      // BasitKargo may return list under different keys; try common ones:
+      const items =
+        resp?.content ||
+        resp?.items ||
+        resp?.data ||
+        resp?.orders ||
+        resp?.result ||
+        [];
+
+      if (!Array.isArray(items) || items.length === 0) break;
+
+      for (const it of items) {
+        const id = it?.id;
+        if (!id) continue;
+
+        try {
+          const r = await handleBasitKargoWebhook({ id, status: "READY_TO_SHIP" });
+          if (r?.ok) done.push({ id, msg: r.msg });
+          else failed.push({ id, msg: r.msg });
+        } catch (e) {
+          failed.push({ id, msg: e?.message || "error" });
+        }
+      }
+
+      if (items.length < size) break;
+    }
+
+    return res.json({
+      ok: true,
+      startDate,
+      endDate,
+      statusList,
+      doneCount: done.length,
+      failedCount: failed.length,
+      failed,
+    });
   } catch (e) {
     console.error(e);
     return res.status(500).send(e?.message || "Server error");
